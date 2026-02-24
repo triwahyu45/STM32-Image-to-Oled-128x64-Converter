@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OLED XBM Generator (Fixed for u8g2)</title>
+    <style>
+        :root { --bg: #121212; --card: #1e1e1e; --accent: #14e7fe; --text: #eee; }
+        body { font-family: monospace; background: var(--bg); color: var(--text); display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { background: var(--card); padding: 20px; border-radius: 10px; border: 1px solid #333; max-width: 600px; width: 100%; }
+        h2 { color: var(--accent); text-align: center; margin-top: 0; }
+        
+        .canvas-wrapper { 
+            position: relative; margin: 20px auto; width: 256px; height: 128px; 
+            background: #000; border: 2px solid #555; 
+            display: flex; align-items: center; justify-content: center;
+        }
+        canvas { image-rendering: pixelated; width: 100%; height: 100%; }
+        
+        /* Guide Box (Area Merah) */
+        #guideBox {
+            position: absolute; border: 1px solid red; pointer-events: none;
+            box-shadow: 0 0 5px red;
+            width: 0px; height: 0px;
+        }
+
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .input-group { background: #2a2a2a; padding: 10px; border-radius: 5px; }
+        label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
+        input[type="number"] { width: 100%; background: #111; border: 1px solid #444; color: var(--accent); padding: 5px; font-weight: bold; text-align: center; box-sizing: border-box;}
+        input[type="range"] { width: 100%; accent-color: var(--accent); }
+        input[type="file"] { width: 100%; margin-bottom: 10px; }
+        
+        button { width: 100%; padding: 12px; background: var(--accent); color: #000; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px; font-size: 14px;}
+        button:hover { opacity: 0.9; }
+        
+        textarea { width: 100%; height: 200px; background: #000; color: #00e676; border: 1px solid #333; margin-top: 15px; font-family: 'Courier New', monospace; padding: 10px; box-sizing: border-box; resize: vertical; }
+        
+        .info { text-align: center; font-size: 11px; color: #666; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>XBM GENERATOR (u8g2 READY)</h2>
+    <input type="file" id="fileInput" accept="image/*">
+
+    <div class="canvas-wrapper">
+        <canvas id="preview" width="128" height="64"></canvas>
+        <div id="guideBox"></div>
+    </div>
+    
+    <div class="controls">
+        <div class="input-group">
+            <label>LEBAR (WIDTH)</label>
+            <input type="number" id="inpW" value="35" min="1" max="128">
+        </div>
+        <div class="input-group">
+            <label>TINGGI (HEIGHT)</label>
+            <input type="number" id="inpH" value="41" min="1" max="64">
+        </div>
+        <div class="input-group" style="grid-column: span 2;">
+            <label>THRESHOLD (Gelap/Terang): <span id="threshVal">128</span></label>
+            <input type="range" id="thresh" min="0" max="255" value="128">
+        </div>
+        <div class="input-group" style="grid-column: span 2; display: flex; align-items: center; gap: 10px;">
+            <input type="checkbox" id="checkInvert" style="width: auto;">
+            <label style="margin: 0; color: #fff;">Invert Color (Balik Warna)</label>
+        </div>
+    </div>
+
+    <button onclick="generateXBM()">GENERATE CODE</button>
+    <div class="info">Format: C Array, XBM (LSB First), Byte Aligned.</div>
+    <textarea id="output" readonly placeholder="Kode Hex akan muncul di sini..."></textarea>
+</div>
+
+<script>
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d');
+    const guideBox = document.getElementById('guideBox');
+    
+    // Inputs
+    const fileInput = document.getElementById('fileInput');
+    const inpW = document.getElementById('inpW');
+    const inpH = document.getElementById('inpH');
+    const inpThresh = document.getElementById('thresh');
+    const inpInvert = document.getElementById('checkInvert');
+    
+    let srcImg = null;
+    const MAX_W = 128;
+    const MAX_H = 64;
+
+    // --- EVENT LISTENER ---
+    fileInput.addEventListener('change', (e) => {
+        if(e.target.files && e.target.files[0]) {
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                const img = new Image();
+                img.onload = () => { srcImg = img; render(); };
+                img.src = evt.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        }
+    });
+
+    [inpW, inpH, inpThresh, inpInvert].forEach(el => {
+        el.addEventListener('input', render);
+    });
+
+    // --- RENDER FUNCTION ---
+    function render() {
+        // Clear Canvas
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, MAX_W, MAX_H);
+
+        // Update Text Info
+        document.getElementById('threshVal').innerText = inpThresh.value;
+
+        // Ambil Ukuran Target
+        let w = parseInt(inpW.value) || 1;
+        let h = parseInt(inpH.value) || 1;
+        if(w > MAX_W) w = MAX_W;
+        if(h > MAX_H) h = MAX_H;
+
+        // Update Guide Box (Visual Merah)
+        // Canvas CSS width is 256px (2x scale of 128px)
+        const scale = 2; 
+        const startX = Math.floor((MAX_W - w) / 2);
+        const startY = Math.floor((MAX_H - h) / 2);
+        
+        guideBox.style.left = (startX * scale) + "px";
+        guideBox.style.top = (startY * scale) + "px";
+        guideBox.style.width = (w * scale) + "px";
+        guideBox.style.height = (h * scale) + "px";
+
+        if(srcImg) {
+            // Gambar img di tengah (resized)
+            ctx.drawImage(srcImg, startX, startY, w, h);
+            
+            // Proses Thresholding (Binerisasi)
+            const imgData = ctx.getImageData(0, 0, MAX_W, MAX_H);
+            const data = imgData.data;
+            const th = parseInt(inpThresh.value);
+            const invert = inpInvert.checked;
+
+            for(let i=0; i<data.length; i+=4) {
+                const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+                let val = (avg > th) ? 255 : 0;
+                if(invert) val = 255 - val;
+                
+                data[i] = data[i+1] = data[i+2] = val; // RGB
+            }
+            ctx.putImageData(imgData, 0, 0);
+        }
+    }
+
+    // --- GENERATE XBM CODE ---
+    function generateXBM() {
+        if(!srcImg) { alert("Upload gambar dulu bang!"); return; }
+
+        const w = parseInt(inpW.value);
+        const h = parseInt(inpH.value);
+        const startX = Math.floor((MAX_W - w) / 2);
+        const startY = Math.floor((MAX_H - h) / 2);
+
+        // Ambil pixel data dari canvas
+        const imgData = ctx.getImageData(0, 0, MAX_W, MAX_H).data;
+
+        // XBM Header
+        let out = `/* LOGO ${w}x${h} - Format XBM (LSB First) */\n`;
+        out += `const unsigned char LKS_logo[] = {\n  `;
+
+        let count = 0;
+        
+        // Loop Baris (Y)
+        for(let y=0; y<h; y++) {
+            // Loop Byte dalam satu baris
+            // XBM butuh padding ke byte terdekat. Contoh lebar 35 -> butuh 5 byte (40 bit)
+            const bytesPerRow = Math.ceil(w / 8);
+            
+            for(let b=0; b<bytesPerRow; b++) {
+                let byte = 0;
+                
+                // Loop Bit (0-7) untuk tiap Byte
+                for(let bit=0; bit<8; bit++) {
+                    const currentX = (b * 8) + bit;
+                    
+                    if(currentX < w) { // Cek biar gak bablas keluar lebar gambar
+                        // Ambil pixel dari canvas (offset startX/Y)
+                        const canvasX = startX + currentX;
+                        const canvasY = startY + y;
+                        const idx = (canvasY * MAX_W + canvasX) * 4;
+                        
+                        // Cek pixel putih
+                        if(imgData[idx] > 128) {
+                            // --- KUNCI UTAMA ---
+                            // XBM pakai LSB First: Bit 0 adalah pixel paling kiri di byte tsb
+                            byte |= (1 << bit); 
+                        }
+                    }
+                }
+                
+                out += "0x" + byte.toString(16).toUpperCase().padStart(2, '0') + ", ";
+                count++;
+                if(count % 12 === 0) out += "\n  ";
+            }
+        }
+
+        // Clean up string
+        out = out.trim().replace(/,$/, "");
+        out += "\n};";
+
+        document.getElementById('output').value = out;
+        document.getElementById('output').select();
+        // document.execCommand('copy'); // Opsional auto copy
+    }
+
+    // Init
+    render();
+</script>
+
+</body>
+</html>
